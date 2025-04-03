@@ -19,7 +19,7 @@ from onnx2tf.utils.common_functions import (
 )
 
 
-def custom_pad(tensor, paddings, mode="CONSTANT", constant_value=0.0):
+def custom_pad(tensor, paddings, mode="CONSTANT", constant_values=0.0):
     """
     Symbolically pads a float32 tensor using basic TensorFlow ops, with support for:
       - "CONSTANT": pad with a constant value.
