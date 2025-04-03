@@ -18,69 +18,6 @@ from onnx2tf.utils.common_functions import (
     stridedslice_with_flexing_deterrence,
 )
 
-def custom_pad(tensor, paddings, mode="CONSTANT", constant_value=0.0):
-    tensor = tf.convert_to_tensor(tensor, dtype=tf.float32)
-    paddings = tf.convert_to_tensor(paddings, dtype=tf.int32)
-    
-    rank = tensor.shape.rank
-    if rank is None:
-        raise ValueError("Input tensor must have a statically-known rank.")
-    
-    padded_tensor = tensor
-    pads_list = tf.unstack(paddings, axis=0)
-    mode_upper = mode.upper()
-
-    for dim in range(rank):
-        pad_before = pads_list[dim][0]
-        pad_after  = pads_list[dim][1]
-        cur_shape = tf.shape(padded_tensor)
-
-        before_shape = tf.concat([cur_shape[:dim], [pad_before], cur_shape[dim+1:]], axis=0)
-        after_shape  = tf.concat([cur_shape[:dim], [pad_after],  cur_shape[dim+1:]], axis=0)
-
-        # Compute before padding
-        if mode_upper == "CONSTANT":
-            before_pad = tf.zeros(before_shape, dtype=tf.float32) + constant_value
-        elif mode_upper in ("REFLECT", "SYMMETRIC"):
-            offset = 1 if mode_upper == "REFLECT" else 0
-            begin = tf.concat([
-                tf.zeros([dim], dtype=tf.int32),
-                [offset],
-                tf.zeros([rank - dim - 1], dtype=tf.int32)
-            ], axis=0)
-            size = tf.concat([cur_shape[:dim], [pad_before], cur_shape[dim+1:]], axis=0)
-            before_slice = tf.slice(padded_tensor, begin, size)
-            before_pad = tf.reverse(before_slice, axis=[dim])
-        else:
-            raise ValueError(f"Unsupported mode: {mode}")
-
-        # Compute after padding
-        if mode_upper == "CONSTANT":
-            after_pad = tf.zeros(after_shape, dtype=tf.float32) + constant_value
-        elif mode_upper in ("REFLECT", "SYMMETRIC"):
-            offset = 1 if mode_upper == "REFLECT" else 0
-            start_idx = cur_shape[dim] - pad_after - offset
-            begin = tf.concat([
-                tf.zeros([dim], dtype=tf.int32),
-                [start_idx],
-                tf.zeros([rank - dim - 1], dtype=tf.int32)
-            ], axis=0)
-            size = tf.concat([cur_shape[:dim], [pad_after], cur_shape[dim+1:]], axis=0)
-            after_slice = tf.slice(padded_tensor, begin, size)
-            after_pad = tf.reverse(after_slice, axis=[dim])
-        else:
-            raise ValueError(f"Unsupported mode: {mode}")
-
-        # Mask paddings if zero (avoid conditional branching)
-        before_pad = tf.where(pad_before > 0, before_pad, tf.zeros_like(before_pad))
-        after_pad = tf.where(pad_after > 0, after_pad, tf.zeros_like(after_pad))
-
-        padded_tensor = tf.concat([before_pad, padded_tensor, after_pad], axis=dim)
-    
-    return padded_tensor
-
-
-
 
 @print_node_info
 @inverted_operation_enable_disable
@@ -324,7 +261,7 @@ def make_node(
     # Create the TF pad op
     if mode != 'edge':
         # mode != 'edge'
-        tf_layers_dict[graph_node_output.name]['tf_node'] = custom_pad(
+        tf_layers_dict[graph_node_output.name]['tf_node'] = tf.pad(
             tensor=input_tensor,
             paddings=paddings,
             mode=mode,
@@ -346,7 +283,7 @@ def make_node(
                 temp_empty_paddings[idx][0] = 1
                 temp_empty_paddings[idx][1] = 0
                 for _ in range(begin_loop_count):
-                    input_tensor_padded = custom_pad(
+                    input_tensor_padded = tf.pad(
                         input_tensor_padded, temp_empty_paddings, 'SYMMETRIC'
                     )
                 # end
@@ -355,7 +292,7 @@ def make_node(
                 temp_empty_paddings[idx][0] = 0
                 temp_empty_paddings[idx][1] = 1
                 for _ in range(end_loop_count):
-                    input_tensor_padded = custom_pad(
+                    input_tensor_padded = tf.pad(
                         input_tensor_padded, temp_empty_paddings, 'SYMMETRIC'
                     )
         tf_layers_dict[graph_node_output.name]['tf_node'] = input_tensor_padded
