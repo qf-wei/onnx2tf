@@ -25,7 +25,7 @@ def tensor_scatter_nd_update_alternative(tensor, indices, updates, name=None):
     which is often the case for certain YOLO postprocessing ops.
     """
     # Cast indices to int32
-    indices = tf.cast(indices, tf.int32)
+    indices = tf.cast(indices, tf.float16)
     
     # Determine the static rank of tensor.
     data_rank = tensor.shape.ndims
