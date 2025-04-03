@@ -18,23 +18,43 @@ from onnx2tf.utils.common_functions import (
 def tensor_scatter_nd_update_alternative(tensor, indices, updates, name=None):
     """
     Alternative to tf.tensor_scatter_nd_update using tf.scatter_nd and tf.where.
-    This function creates a boolean mask of the update positions and then uses
-    tf.where to select between the scattered updates and the original tensor.
+    This version checks if the indices last-dimension is larger than the rank of `tensor`
+    and, if so, slices the indices to only keep the last components corresponding to the rank.
     
-    Note: This does not guarantee "last-update-wins" behavior for duplicate indices.
+    Note: This assumes that the extra dimensions in the indices can be discarded,
+    which is often the case for certain YOLO postprocessing ops.
     """
-    # Cast indices to int32 so that they match the expected type.
+    # Cast indices to int32
     indices = tf.cast(indices, tf.int32)
-    # Instead of tf.ones_like, use tf.fill to generate a tensor of ones.
+    
+    # Determine the static rank of tensor.
+    data_rank = tensor.shape.ndims
+    if data_rank is None:
+        # If unknown statically, use dynamic rank.
+        data_rank = tf.rank(tensor)
+        # Dynamically slice if needed.
+        indices_last_dim = tf.shape(indices)[-1]
+        indices = tf.cond(
+            tf.greater(indices_last_dim, data_rank),
+            lambda: indices[..., -data_rank:],
+            lambda: indices
+        )
+    else:
+        # If static, slice if the last dimension is greater than data_rank.
+        if indices.shape[-1] is not None and indices.shape[-1] > data_rank:
+            indices = indices[..., -data_rank:]
+    
+    # Create a numeric mask using tf.fill (avoiding tf.ones_like)
     ones_tensor = tf.fill(tf.shape(updates), 1.0)
-    # Use tf.scatter_nd to create a numeric mask with ones at the update positions.
     numeric_mask = tf.scatter_nd(indices, ones_tensor, tf.shape(tensor))
-    # Cast the numeric mask to a boolean tensor.
     mask = tf.cast(numeric_mask, tf.bool)
-    # Scatter the updates into a tensor of the same shape as 'tensor'.
+    
+    # Scatter the updates into a tensor of the same shape as `tensor`
     scattered_updates = tf.scatter_nd(indices, updates, tf.shape(tensor))
-    # Use tf.where to select the scattered update where mask is True; otherwise, keep the original tensor.
+    
+    # Combine with the original tensor
     return tf.where(mask, scattered_updates, tensor, name=name)
+
 
 
 
