@@ -18,126 +18,103 @@ from onnx2tf.utils.common_functions import (
     stridedslice_with_flexing_deterrence,
 )
 
-def custom_pad(tensor, paddings, mode="CONSTANT", constant_values=0.0):
+
+def custom_pad(tensor, paddings, mode="CONSTANT", constant_value=0.0):
     """
-    Applies padding to a float32 tensor using only basic TF ops, supporting:
-      - "CONSTANT": pads with a constant value.
-      - "REFLECT": pads with a reflection of the tensor (excludes the border element).
-      - "SYMMETRIC": pads with a symmetric reflection (includes the border element).
+    Symbolically pads a float32 tensor using only basic TF operations.
     
     Parameters
     ----------
     tensor : tf.Tensor
         A float32 tensor to pad.
-    paddings : array-like or tf.Tensor
-        A tensor or array of shape [rank, 2] (type int32) where each row is [pad_before, pad_after].
+    paddings : tf.Tensor
+        A tensor of shape [rank, 2] (dtype int32) where each row is [pad_before, pad_after].
     mode : str, optional
-        One of "CONSTANT", "REFLECT", or "SYMMETRIC". (Default is "CONSTANT")
+        One of "CONSTANT", "REFLECT", or "SYMMETRIC" (case-insensitive).
     constant_value : float, optional
-        The constant value to pad with when mode is "CONSTANT". (Default is 0.0)
+        Value to pad with for CONSTANT mode.
         
     Returns
     -------
     tf.Tensor
         The padded tensor (float32).
-        
-    Note
-    ----
-    This function manually implements the pad behavior without calling tf.pad so that
-    the resulting graph uses float32 everywhere (which may ease Core ML conversion).
     """
-    # Ensure the input tensor is float32.
+    # Ensure inputs have proper types.
     tensor = tf.convert_to_tensor(tensor, dtype=tf.float32)
+    paddings = tf.convert_to_tensor(paddings, dtype=tf.int32)
     
-    # Ensure paddings is a tensor of type int32.
-    if not isinstance(paddings, tf.Tensor):
-        paddings = tf.convert_to_tensor(paddings, dtype=tf.int32)
-    else:
-        paddings = tf.cast(paddings, tf.int32)
-    
-    # Try to get a static rank.
+    # Get the static rank; we assume it is known.
     rank = tensor.shape.rank
     if rank is None:
         raise ValueError("The input tensor must have a statically-known rank.")
     
-    # For simplicity, we assume paddings are known statically.
-    # (If they aren’t, you might add dynamic logic using tf.shape and tf.unstack.)
-    paddings_np = paddings.numpy() if hasattr(paddings, "numpy") else np.array(paddings)
-    
     padded_tensor = tensor
-    # Loop over each dimension, applying padding one dimension at a time.
+    # Unstack paddings so we get one [pad_before, pad_after] pair per dimension.
+    pads_list = tf.unstack(paddings, axis=0)
+    
+    # Loop over each dimension.
     for dim in range(rank):
-        pad_before = int(paddings_np[dim, 0])
-        pad_after  = int(paddings_np[dim, 1])
-        current_shape = padded_tensor.shape.as_list()
+        pad_pair = pads_list[dim]  # a tensor of shape [2]
+        pad_before = pad_pair[0]
+        pad_after  = pad_pair[1]
         
-        if mode.upper() == "CONSTANT":
-            # Build padding slices filled with constant_value.
-            before_shape = current_shape.copy()
-            before_shape[dim] = pad_before
-            before_pad = tf.fill(before_shape, constant_value)
-            after_shape = current_shape.copy()
-            after_shape[dim] = pad_after
-            after_pad = tf.fill(after_shape, constant_value)
-        elif mode.upper() == "REFLECT":
-            # REFLECT mode: reflect without repeating the border.
-            # (Requires pad_before, pad_after <= current dimension size - 1)
-            if pad_before > 0:
-                # Slice from index 1 to 1+pad_before and reverse along dim.
-                begin = [0] * rank
-                begin[dim] = 1
-                size = current_shape.copy()
-                size[dim] = pad_before
-                before_slice = tf.slice(padded_tensor, begin, size)
-                before_pad = tf.reverse(before_slice, axis=[dim])
-            else:
-                before_pad = None
-            if pad_after > 0:
-                begin = [0] * rank
-                # Start from (current_dim - pad_after - 1) to exclude the edge element.
-                begin[dim] = current_shape[dim] - pad_after - 1
-                size = current_shape.copy()
-                size[dim] = pad_after
-                after_slice = tf.slice(padded_tensor, begin, size)
-                after_pad = tf.reverse(after_slice, axis=[dim])
-            else:
-                after_pad = None
-        elif mode.upper() == "SYMMETRIC":
-            # SYMMETRIC mode: reflect including the border.
-            if pad_before > 0:
-                begin = [0] * rank
-                begin[dim] = 0
-                size = current_shape.copy()
-                size[dim] = pad_before
-                before_slice = tf.slice(padded_tensor, begin, size)
-                before_pad = tf.reverse(before_slice, axis=[dim])
-            else:
-                before_pad = None
-            if pad_after > 0:
-                begin = [0] * rank
-                begin[dim] = current_shape[dim] - pad_after
-                size = current_shape.copy()
-                size[dim] = pad_after
-                after_slice = tf.slice(padded_tensor, begin, size)
-                after_pad = tf.reverse(after_slice, axis=[dim])
-            else:
-                after_pad = None
-        else:
-            raise ValueError("Unsupported pad mode: {}".format(mode))
+        # Get current dynamic shape.
+        cur_shape = tf.shape(padded_tensor)
         
-        # Concatenate along the current dimension.
-        if mode.upper() == "CONSTANT":
-            padded_tensor = tf.concat([before_pad, padded_tensor, after_pad], axis=dim)
+        # Build the shapes for the before and after padding slices.
+        before_shape = tf.concat([cur_shape[:dim], [pad_before], cur_shape[dim+1:]], axis=0)
+        after_shape  = tf.concat([cur_shape[:dim], [pad_after],  cur_shape[dim+1:]], axis=0)
+        
+        if tf.equal(pad_before, 0):
+            before_pad = tf.zeros(before_shape, dtype=tf.float32)
         else:
-            concat_list = []
-            if before_pad is not None:
-                concat_list.append(before_pad)
-            concat_list.append(padded_tensor)
-            if after_pad is not None:
-                concat_list.append(after_pad)
-            padded_tensor = tf.concat(concat_list, axis=dim)
+            if mode.upper() == "CONSTANT":
+                before_pad = tf.fill(before_shape, constant_value)
+            elif mode.upper() == "REFLECT":
+                # REFLECT: reflect without repeating the border.
+                # Slice starting at index 1 along dim, with length pad_before.
+                begin = tf.concat([tf.zeros([dim], dtype=tf.int32), [1], tf.zeros([rank-dim-1], dtype=tf.int32)], axis=0)
+                size  = tf.concat([cur_shape[:dim], [pad_before], cur_shape[dim+1:]], axis=0)
+                slice_before = tf.slice(padded_tensor, begin, size)
+                before_pad = tf.reverse(slice_before, axis=[dim])
+            elif mode.upper() == "SYMMETRIC":
+                # SYMMETRIC: reflect including the border.
+                begin = tf.concat([tf.zeros([dim], dtype=tf.int32), [0], tf.zeros([rank-dim-1], dtype=tf.int32)], axis=0)
+                size  = tf.concat([cur_shape[:dim], [pad_before], cur_shape[dim+1:]], axis=0)
+                slice_before = tf.slice(padded_tensor, begin, size)
+                before_pad = tf.reverse(slice_before, axis=[dim])
+            else:
+                raise ValueError("Unsupported pad mode: " + mode)
+        
+        if tf.equal(pad_after, 0):
+            after_pad = tf.zeros(after_shape, dtype=tf.float32)
+        else:
+            if mode.upper() == "CONSTANT":
+                after_pad = tf.fill(after_shape, constant_value)
+            elif mode.upper() == "REFLECT":
+                # For REFLECT, slice from index (cur_shape[dim] - pad_after - 1)
+                begin = tf.concat([tf.zeros([dim], dtype=tf.int32),
+                                   [cur_shape[dim] - pad_after - 1],
+                                   tf.zeros([rank-dim-1], dtype=tf.int32)], axis=0)
+                size  = tf.concat([cur_shape[:dim], [pad_after], cur_shape[dim+1:]], axis=0)
+                slice_after = tf.slice(padded_tensor, begin, size)
+                after_pad = tf.reverse(slice_after, axis=[dim])
+            elif mode.upper() == "SYMMETRIC":
+                # For SYMMETRIC, slice from index (cur_shape[dim] - pad_after)
+                begin = tf.concat([tf.zeros([dim], dtype=tf.int32),
+                                   [cur_shape[dim] - pad_after],
+                                   tf.zeros([rank-dim-1], dtype=tf.int32)], axis=0)
+                size  = tf.concat([cur_shape[:dim], [pad_after], cur_shape[dim+1:]], axis=0)
+                slice_after = tf.slice(padded_tensor, begin, size)
+                after_pad = tf.reverse(slice_after, axis=[dim])
+            else:
+                raise ValueError("Unsupported pad mode: " + mode)
+        
+        # Concatenate: before_pad + current tensor + after_pad along dimension dim.
+        padded_tensor = tf.concat([before_pad, padded_tensor, after_pad], axis=dim)
     
     return padded_tensor
+
 
 
 
