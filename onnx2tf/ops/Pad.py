@@ -18,7 +18,7 @@ from onnx2tf.utils.common_functions import (
     stridedslice_with_flexing_deterrence,
 )
 
-def custom_pad(tensor, paddings, mode="CONSTANT", constant_value=0.0):
+def custom_pad(tensor, paddings, mode="CONSTANT", constant_values=0.0):
     """
     Applies padding to a float32 tensor using only basic TF ops, supporting:
       - "CONSTANT": pads with a constant value.
@@ -389,7 +389,6 @@ def make_node(
             paddings=paddings,
             mode=mode,
             constant_values=constant_value,
-            name=graph_node.name,
         )
     else:
         # mode = 'edge' (a.k.a. 'SYMMETRIC')
