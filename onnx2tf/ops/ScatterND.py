@@ -25,7 +25,7 @@ def tensor_scatter_nd_update_alternative(tensor, indices, updates, name=None):
     """
     indices = tf.cast(indices, tf.int32)
     # Create a boolean mask with True at the positions to update.
-    mask = tf.scatter_nd(indices, tf.ones_like(updates, dtype=tf.float32), tf.shape(tensor))
+    mask = tf.scatter_nd(indices, tf.ones_like(updates, dtype=tf.int32), tf.shape(tensor))
     # Scatter the updates into a tensor of the same shape as 'tensor'.
     scattered_updates = tf.scatter_nd(indices, updates, tf.shape(tensor))
     # Where mask is True, take the scattered update; otherwise, use the original tensor.
