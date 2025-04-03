@@ -15,6 +15,21 @@ from onnx2tf.utils.common_functions import (
     post_process_transpose,
 )
 
+def tensor_scatter_nd_update_alternative(tensor, indices, updates, name=None):
+    """
+    Alternative to tf.tensor_scatter_nd_update using tf.scatter_nd and tf.where.
+    This function creates a boolean mask of the update positions and then uses
+    tf.where to select between the scattered updates and the original tensor.
+    
+    Note: This does not guarantee "last-update-wins" behavior for duplicate indices.
+    """
+    # Create a boolean mask with True at the positions to update.
+    mask = tf.scatter_nd(indices, tf.ones_like(updates, dtype=tf.bool), tf.shape(tensor))
+    # Scatter the updates into a tensor of the same shape as 'tensor'.
+    scattered_updates = tf.scatter_nd(indices, updates, tf.shape(tensor))
+    # Where mask is True, take the scattered update; otherwise, use the original tensor.
+    return tf.where(mask, scattered_updates, tensor, name=name)
+
 
 @print_node_info
 @inverted_operation_enable_disable
@@ -115,39 +130,33 @@ def make_node(
     # NHWC -> NCHW
     nchw = not (data_nhwc or indices_nhwc or updates_nhwc)
     ## data
-    if data_nhwc \
-        and len(input_tensor.shape) >= 3:
+    if data_nhwc and len(input_tensor.shape) >= 3:
         perm = [0, len(input_tensor.shape)-1] + [i for i in range(1, len(input_tensor.shape)-1)]
         input_tensor = tf.transpose(a=input_tensor, perm=perm)
         nchw = True
-    elif not data_nhwc \
-        and len(input_tensor.shape) >= 3 \
+    elif not data_nhwc and len(input_tensor.shape) >= 3 \
         and graph_node.inputs[0].shape is not None \
         and input_tensor.shape != graph_node.inputs[0].shape:
         perm = [0, len(input_tensor.shape)-1] + [i for i in range(1, len(input_tensor.shape)-1)]
         input_tensor = tf.transpose(a=input_tensor, perm=perm)
         nchw = True
     ## indices
-    if indices_nhwc \
-        and len(indices_tensor.shape) >= 4:
+    if indices_nhwc and len(indices_tensor.shape) >= 4:
         perm = [0, len(indices_tensor.shape)-2] + [i for i in range(1, len(indices_tensor.shape)-2)] + [len(indices_tensor.shape)-1]
         indices_tensor = tf.transpose(a=indices_tensor, perm=perm)
         nchw = True
-    elif not indices_nhwc \
-        and len(indices_tensor.shape) >= 4 \
+    elif not indices_nhwc and len(indices_tensor.shape) >= 4 \
         and graph_node.inputs[1].shape is not None \
         and indices_tensor.shape != graph_node.inputs[1].shape:
         perm = [0, len(indices_tensor.shape)-2] + [i for i in range(1, len(indices_tensor.shape)-2)] + [len(indices_tensor.shape)-1]
         indices_tensor = tf.transpose(a=indices_tensor, perm=perm)
         nchw = True
     ## updates
-    if updates_nhwc \
-        and len(updates_tensor.shape) >= 3:
+    if updates_nhwc and len(updates_tensor.shape) >= 3:
         perm = [0, len(updates_tensor.shape)-1] + [i for i in range(1, len(updates_tensor.shape)-1)]
         updates_tensor = tf.transpose(a=updates_tensor, perm=perm)
         nchw = True
-    elif not updates_nhwc \
-        and len(updates_tensor.shape) >= 3 \
+    elif not updates_nhwc and len(updates_tensor.shape) >= 3 \
         and graph_node.inputs[2].shape is not None \
         and updates_tensor.shape != graph_node.inputs[2].shape:
         perm = [0, len(updates_tensor.shape)-1] + [i for i in range(1, len(updates_tensor.shape)-1)]
@@ -174,38 +183,34 @@ def make_node(
     else:
         simple_scatternd = False
 
-    # Generation of TF OP
+    # Generation of TF OP: if complex indices, process negative indices.
     if not simple_scatternd:
         indices_tensor = process_neg_idx(
             data=input_tensor,
             indices=indices_tensor,
         )
 
-    # normal scatter_nd_update
-    tf_layers_dict[graph_node_output.name]['tf_node'] = \
-        tf.tensor_scatter_nd_update(
-            tensor=input_tensor \
-                if not isinstance(input_tensor, np.ndarray) \
-                    else tf.convert_to_tensor(input_tensor),
-            indices=indices_tensor \
-                if not isinstance(indices_tensor, np.ndarray) \
-                    else tf.convert_to_tensor(indices_tensor),
-            updates=updates_tensor \
-                if not isinstance(updates_tensor, np.ndarray) \
-                    else tf.convert_to_tensor(updates_tensor),
-            name=graph_node.name,
-        )
+    # Convert inputs to tensors if necessary.
+    tensor_converted = input_tensor if not isinstance(input_tensor, np.ndarray) else tf.convert_to_tensor(input_tensor)
+    indices_converted = indices_tensor if not isinstance(indices_tensor, np.ndarray) else tf.convert_to_tensor(indices_tensor)
+    updates_converted = updates_tensor if not isinstance(updates_tensor, np.ndarray) else tf.convert_to_tensor(updates_tensor)
+
+    # Instead of using tf.tensor_scatter_nd_update (which Core ML cannot support),
+    # use the alternative implementation.
+    tf_layers_dict[graph_node_output.name]['tf_node'] = tensor_scatter_nd_update_alternative(
+        tensor=tensor_converted,
+        indices=indices_converted,
+        updates=updates_converted,
+        name=graph_node.name,
+    )
 
     # NCHW -> NHWC
-    if nchw \
-        and len(input_tensor.shape) >= 3 \
-        and pre_input_tensor_shape != tf_layers_dict[graph_node_output.name]['tf_node'].shape:
+    if nchw and len(input_tensor.shape) >= 3 and pre_input_tensor_shape != tf_layers_dict[graph_node_output.name]['tf_node'].shape:
         perm = [0] + [i for i in range(2, len(input_tensor.shape))] + [1]
-        tf_layers_dict[graph_node_output.name]['tf_node'] = \
-            tf.transpose(
-                a=tf_layers_dict[graph_node_output.name]['tf_node'],
-                perm=perm,
-            )
+        tf_layers_dict[graph_node_output.name]['tf_node'] = tf.transpose(
+            a=tf_layers_dict[graph_node_output.name]['tf_node'],
+            perm=perm,
+        )
 
     # Post-process transpose
     tf_layers_dict[graph_node_output.name]['tf_node'] = post_process_transpose(
@@ -216,17 +221,16 @@ def make_node(
     )
 
     # Generation of Debug Info
-    tf_layers_dict[graph_node_output.name]['tf_node_info'] = \
-        make_tf_node_info(
-            node_info={
-                'tf_op_type': tf.tensor_scatter_nd_update,
-                'tf_inputs': {
-                    'tensor': input_tensor,
-                    'indices': indices_tensor,
-                    'updates': updates_tensor,
-                },
-                'tf_outputs': {
-                    'output': tf_layers_dict[graph_node_output.name]['tf_node'],
-                },
-            }
-        )
+    tf_layers_dict[graph_node_output.name]['tf_node_info'] = make_tf_node_info(
+        node_info={
+            'tf_op_type': tensor_scatter_nd_update_alternative,
+            'tf_inputs': {
+                'tensor': input_tensor,
+                'indices': indices_tensor,
+                'updates': updates_tensor,
+            },
+            'tf_outputs': {
+                'output': tf_layers_dict[graph_node_output.name]['tf_node'],
+            },
+        }
+    )
