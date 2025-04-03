@@ -23,6 +23,7 @@ def tensor_scatter_nd_update_alternative(tensor, indices, updates, name=None):
     
     Note: This does not guarantee "last-update-wins" behavior for duplicate indices.
     """
+    indices = tf.cast(indices, tf.int32)
     # Create a boolean mask with True at the positions to update.
     mask = tf.scatter_nd(indices, tf.ones_like(updates, dtype=tf.bool), tf.shape(tensor))
     # Scatter the updates into a tensor of the same shape as 'tensor'.
