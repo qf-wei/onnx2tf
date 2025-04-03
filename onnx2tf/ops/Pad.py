@@ -185,7 +185,7 @@ def make_node(
     # Ensure paddings is int32
     if isinstance(paddings, np.ndarray):
         paddings = tf.convert_to_tensor(paddings)
-    paddings = tf.cast(paddings, dtype=tf.int32)
+    paddings = tf.cast(paddings, dtype=tf.float32)
 
     # Negative number padding workaround
     if (
