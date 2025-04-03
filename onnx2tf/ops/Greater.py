@@ -105,12 +105,13 @@ def make_node(
         **kwargs,
     )
 
-    tf_layers_dict[graph_node_output.name]['tf_node'] = \
-        tf.math.greater(
-            x=input_tensor_1,
-            y=input_tensor_2,
-            name=graph_node.name,
-        )
+    # Compute the greater operation and cast its boolean output to float32
+    greater_result = tf.math.greater(
+        x=input_tensor_1,
+        y=input_tensor_2,
+        name=graph_node.name,
+    )
+    tf_layers_dict[graph_node_output.name]['tf_node'] = tf.cast(greater_result, tf.float32)
 
     # Post-process transpose
     tf_layers_dict[graph_node_output.name]['tf_node'] = post_process_transpose(
